@@ -1,0 +1,391 @@
+#!/usr/bin/env python3
+
+"""Determine which endpoint provides the lowest latency for a set of probes.
+
+Given a list of endpoint (attached to different upstream providers),
+this program will tell which one has the lowest latency accross a set
+of probes.
+
+The set of probes can be chosen using various criteria and the results
+can be grouped on various other criteria. The most interesting
+criteria are the ASN and the country.
+"""
+
+import os
+import sys
+import re
+import time
+import json
+import logging
+import argparse
+import itertools
+import functools
+import collections
+import statistics
+import csv
+
+from ipaddress import ip_network, ip_address
+
+import ripe.atlas.cousteau as atlas
+
+WEEK = 60*60*24*7
+
+logger = logging.getLogger("lowest-latency")
+
+def parse():
+    """Parse arguments."""
+    parser = argparse.ArgumentParser(
+        description=sys.modules[__name__].__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+
+    g = parser.add_mutually_exclusive_group()
+    g.add_argument("--debug", "-d", action="store_true",
+                   default=False,
+                   help="enable debugging")
+    g.add_argument("--silent", "-s", action="store_true",
+                   default=False,
+                   help="don't log to console")
+
+    g = parser.add_argument_group("Probe selection")
+    g.add_argument("--limit", metavar="MAX", type=int, default=0,
+                   help="Maximum number of probes to request")
+    g.add_argument("--country", metavar="COUNTRY",
+                   help="Country code of probes")
+    g.add_argument("--asn", metavar="ASN",
+                   help="ASN of probes", type=int)
+    g.add_argument("--prefix", metavar="PREFIX", type=ip_network,
+                   help="IP network prefix")
+    g.add_argument("--no-cache", action="store_false", dest="cache",
+                   help="Disable probe caching")
+
+    g = parser.add_argument_group("Aggregation")
+    g.add_argument("--aggregate", metavar="FIELD",
+                   choices=("asn", "country"),
+                   action="append",
+                   help="Aggregation criteria to use")
+    g.add_argument("--aggregate-count", metavar="N",
+                   type=int, default=4,
+                   help="Sample number for the given aggregated population")
+
+    g = parser.add_argument_group("Best endpoint selection")
+    g.add_argument("--max-loss", metavar="PACKETS",
+                   default=1,
+                   help="Maximum acceptable packet loss")
+    g.add_argument("--best-margin", metavar="PERCENT",
+                   default=50,
+                   help="Margin the best endpoint should have")
+
+    g = parser.add_argument_group("Atlas API")
+    g.add_argument("--api-create-key", metavar="KEY",
+                   default=os.environ.get("ATLAS_CREATE_KEY", ""),
+                   help="API key for create")
+    g.add_argument("--api-download-key", metavar="KEY",
+                   default=os.environ.get("ATLAS_DOWNLOAD_KEY", ""),
+                   help="API key for download")
+    g.add_argument("--msm", metavar="ID",
+                   type=int, action="append",
+                   help="Use the provided measurement IDs")
+
+    parser.add_argument("endpoint", metavar="IP", nargs="+",
+                        type=ip_address,
+                        help="endpoints to test")
+
+    return parser.parse_args()
+
+def get_family(options):
+    """Determine the address family to use.
+
+    Returns either 4 or 6. Will raise an exception in case of mixed
+    family.
+    """
+    families = sorted([endpoint.version for endpoint in options.endpoint])
+    if families[0] != families[-1]:
+        raise ValueError("mixed IP families")
+    logger.debug("IP family is {}".format(families[0]))
+    return families[0]
+
+def get_probes(options, family):
+    """Get a list of probes matching the provided options."""
+    cachename = "probes-v{}".format(family)
+    filters = {"tags": "system-ipv{}-works".format(family),
+               "status": 1}
+    if options.country:
+        filters["country_code"] = options.country
+        cachename += "-country-{}".format(options.country)
+    if options.asn:
+        filters["asn_v{}".format(family)] = options.asn
+        cachename += "-asn-{}".format(options.asn)
+    if options.prefix:
+        filters["prefix_v{}".format(family)] = options.prefix
+        cachename += "-prefix-{}".format(options.prefix)
+    cachename = re.sub(r'[^a-zA-Z0-9-]', '-', cachename)
+
+    probes = None
+    cached = False
+    if options.cache:
+        try:
+            logger.debug("Check cache validity")
+            with open(cachename) as cache:
+                st = os.fstat(cache.fileno())
+                if st.st_mtime + WEEK > time.time():
+                    logger.debug(
+                        "Retrieve cached list of probes from {}".format(
+                            cachename))
+                    probes = json.load(cache)
+                    cached = True
+                else:
+                    logger.debug("Cache too old")
+        except FileNotFoundError:
+            logger.debug("Cache ({}) not available".format(cachename))
+    else:
+        logger.info("Cache disabled")
+
+    if not probes:
+        logger.info("Fetch list of probes (max: {})".format(options.limit))
+        probes = atlas.ProbeRequest(**filters)
+
+    if options.cache and not cached:
+        logger.debug("Write to cache {}".format(cachename))
+        with open(cachename, "w") as cache:
+            probes = list(probes)
+            json.dump(probes, cache)
+
+    if options.limit:
+        probes = itertools.islice(probes, options.limit)
+
+    return probes
+
+def aggregate_key(options, family, probe):
+    """Get the aggregation key for the given probe."""
+    key = []
+    for agg in (options.aggregate or []):
+        if agg == "asn":
+            key.append(str(probe["asn_v{}".format(family)]))
+        if agg == "country":
+            key.append(probe["country_code"])
+    key = "-".join(key) or "all"
+    return key
+
+def get_selected_probes(options, family, probes):
+    """Select a subset of the available probes for aggregation purpose."""
+    selected = collections.defaultdict(list)
+    for probe in probes:
+        key = aggregate_key(options, family, probe)
+        selected[key].append(probe)
+    probes = functools.reduce(lambda x, y: x+y,
+                              [x[:options.aggregate_count]
+                               for x in selected.values()
+                               if len(x) >= options.aggregate_count],
+                              [])
+    for probe in probes:
+        logger.debug("Select probe {} (ASN: {}, country: {})".format(
+            probe["id"],
+            probe["asn_v{}".format(family)],
+            probe["country_code"]))
+    logger.info("Selected {} probes".format(len(probes)))
+    return probes
+
+def send_measures(options, family, probes):
+    """Get measures for the provided probes for the provided endpoints.
+
+    We use a simple ping.
+    """
+    logger.info("Send measure requests")
+    measurements = []
+    for endpoint in options.endpoint:
+        measurements.append(atlas.Ping(af=family,
+                                       target=str(endpoint),
+                                       description="lowest-latency ping test for {}".format(endpoint)))
+    probes = list(probes)
+    source = atlas.AtlasSource(type="probes",
+                               requested=len(probes),
+                               value=",".join([str(x['id']) for x in probes]))
+    request = atlas.AtlasCreateRequest(key=options.api_create_key,
+                                       sources=[source],
+                                       measurements=measurements,
+                                       is_oneoff=True,
+                                       is_public=False)
+    success, response = request.create()
+    if success:
+        m = response['measurements']
+        logger.info("Measure requests successfully sent: {}".format(", ".join([str(x) for x in m])))
+        return m
+    raise RuntimeError("Unable to send measure requests: {}".format(response))
+
+def get_results(options, measures):
+    """Fetch the given measures and return the results."""
+    results = {}
+    for msm in measures:
+        logger.info("Fetch latest results for measurement {}".format(msm))
+
+        logger.debug("Fetch metadata for {}".format(msm))
+        count = 0
+        while True:
+            measurement = atlas.Measurement(id=msm)
+            logger.debug("Current state for {}: {}".format(msm, measurement.status))
+            if measurement.status == "Stopped":
+                break
+            count += 1
+            if count % 10 == 0:
+                logger.info(("Waiting for measurement {} "
+                             "to complete "
+                             "(current state: {})").format(
+                                 msm, measurement.status))
+            time.sleep(5)
+
+        logger.debug("Fetch actual results for {}".format(msm))
+        success, response = atlas.AtlasLatestRequest(msm_id=msm).create()
+        if success:
+            logger.debug("Measure successfully fetched for {}".format(msm))
+            results[msm] = response
+        else:
+            raise RuntimeError(
+                "Unable to fetch results for measure {}: {}".format(msm, response))
+    return results
+
+def get_summary(options, probes, results):
+    """Get a summary of obtained results."""
+    # Each result is something like this:
+    # {'af': 4, 'avg': 75.1083666667,
+    #  'dst_addr': 'xx.xx.xx.xx',
+    #  'dst_name': 'xx.xx.xx.xx',
+    #  'dup': 0,
+    #  'from': '85.2.74.18',
+    #  'fw': 4740,
+    #  'group_id': 5444670,
+    #  'lts': 111,
+    #  'max': 80.328208,
+    #  'min': 72.45467,
+    #  'msm_id': 5444671,
+    #  'msm_name': 'Ping',
+    #  'prb_id': 956,
+    #  'proto': 'ICMP',
+    #  'rcvd': 3,
+    #  'result': [{'rtt': 72.45467}, {'rtt': 80.328208}, {'rtt': 72.542222}],
+    #  'sent': 3,
+    #  'size': 48,
+    #  'src_addr': '192.168.1.101',
+    #  'step': 240,
+    #  'timestamp': 1474442448,
+    #  'ttl': 54,
+    #  'type': 'ping'}
+
+    # Turn the list of probes to a dict
+    probes = {x['id']: x for x in probes}
+
+    # Flatten the results
+    results = functools.reduce(lambda x,y: x+y, results.values(), [])
+
+    # Aggregate the results
+    aggregated_results = collections.defaultdict(list)
+    for result in results:
+        probe = probes[result['prb_id']]
+        key = aggregate_key(options, result['af'], probe)
+        key = "{}-{}".format(result['dst_addr'], key)
+        aggregated_results[key].append(result)
+
+    # Reduction of results
+    summary_results = {}
+    for key in aggregated_results:
+        rcvd = 0
+        sent = 0
+        for result in aggregated_results[key]:
+            rcvd += result['rcvd']
+            sent += result['sent']
+        loss = (sent - rcvd) * 100. / sent
+        if sent == 0:
+            continue
+        summary = dict(rcvd=rcvd,
+                       sent=sent,
+                       loss=loss)
+        rtts = [x['avg'] for x in aggregated_results[key] if x['rcvd'] > 0]
+        if rtts:
+            summary['mean'] = statistics.mean(rtts)
+            summary['median'] = statistics.median_high(rtts)
+            summary['stdev'] = statistics.stdev(rtts)
+            summary['min'] = min(rtts)
+            summary['max'] = max(rtts)
+        summary_results[key] = summary
+    return summary_results
+
+def get_best_endpoint(options, key, summary_results):
+    """Get the best endpoint for the given aggregation key."""
+    max_loss = 100 * options.max_loss / 3 / options.aggregate_count + 1
+    losses = False
+    means = {}
+    for endpoint in options.endpoint:
+        ekey = "{}-{}".format(endpoint, key)
+        summary = summary_results[ekey]
+        if summary["loss"] > max_loss:
+            losses = True
+            continue
+        if 'mean' not in summary:
+            continue
+        means[endpoint] = summary['mean']
+    for endpoint in means:
+        # This endpoint is the best if it is better than any other and
+        # it is better than one other by the given margin. If there
+        # are losses, we have to select a endpoint.
+        if means[endpoint] != min(means.values()):
+            continue
+        if (losses or
+            means[endpoint] * (1 + options.best_margin / 100.) <= max(means.values())):
+            return endpoint
+
+    return None
+
+def display_summary(options, summary_results):
+    """Display results in TSV format, group by endpoints."""
+    csvout = csv.writer(sys.stdout, delimiter='\t')
+    csvout.writerow(['best', 'endpoint', 'key', 'loss', 'mean', 'median',
+                     'stdev', 'min', 'max'])
+    for key in [key.split("-", 1)[1] for key in summary_results]:
+        if not all(["{}-{}".format(endpoint, key) in summary_results
+                    for endpoint in options.endpoint]):
+            continue
+        isatty = os.isatty(sys.stdout.fileno())
+        if isatty:
+            best_endpoint = get_best_endpoint(options, key, summary_results)
+        for endpoint in options.endpoint:
+            ekey = "{}-{}".format(endpoint, key)
+            summary = summary_results[ekey]
+            row = [endpoint == best_endpoint and '*' or ' ',
+                   endpoint, key,
+                   summary.get('loss', ""),
+                   summary.get('mean', ""),
+                   summary.get('median', ""),
+                   summary.get('stdev', ""),
+                   summary.get('min', ""),
+                   summary.get('max', "")]
+            if isatty and endpoint == best_endpoint:
+                print("\033[32m", end='')
+            csvout.writerow([isinstance(x, float) and "{:.2f}".format(x) or x
+                             for x in row])
+            if isatty:
+                print("\033[0m", end='')
+
+if __name__ == "__main__":
+    options = parse()
+
+    # Logging
+    logger.setLevel(options.debug and logging.DEBUG or
+                    options.silent and logging.WARN or logging.INFO)
+    ch = logging.StreamHandler()
+    ch.setFormatter(logging.Formatter(
+        "%(levelname)s[%(name)s] %(message)s"))
+    logger.addHandler(ch)
+
+    try:
+        family = get_family(options)
+        probes = get_probes(options, family)
+        if not options.msm:
+            selected_probes = get_selected_probes(options, family, probes)
+            measures = send_measures(options, family, selected_probes)
+        else:
+            measures = options.msm
+        results = get_results(options, measures)
+        summary = get_summary(options, probes, results)
+        display_summary(options, summary)
+    except Exception as e:
+        logger.exception("%s", e)
+        sys.exit(1)
