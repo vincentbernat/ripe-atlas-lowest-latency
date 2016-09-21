@@ -94,6 +94,9 @@ def parse():
                    help="Use the provided measurement IDs")
     g.add_argument("--public", action="store_true",
                    help="Make the results public")
+    g.add_argument("--ping-count", metavar="COUNT",
+                   type=int, default=3,
+                   help="number of ping requests for each probe")
 
     parser.add_argument("--asn-database", metavar="PATH",
                         default="/usr/share/GeoIP/GeoIPASNum.dat",
@@ -207,6 +210,7 @@ def send_measures(options, family, probes):
     for endpoint in options.endpoint:
         measurements.append(atlas.Ping(af=family,
                                        target=str(endpoint),
+                                       packets=options.ping_count,
                                        description="lowest-latency ping test for {}".format(endpoint)))
     probes = list(probes)
     source = atlas.AtlasSource(type="probes",
