@@ -12,7 +12,8 @@ criteria are the ASN and the country.
 
 Credentials for RIPE Atlas API can be provided on the command-line or
 through ``ATLAS_CREATE_KEY`` and ``ATLAS_DOWNLOAD_KEY`` environment
-variables.
+variables. The latest is only needed if results are not public (the
+default).
 
 """
 
@@ -91,6 +92,8 @@ def parse():
     g.add_argument("--msm", metavar="ID",
                    type=int, action="append",
                    help="Use the provided measurement IDs")
+    g.add_argument("--public", action="store_true",
+                   help="Make the results public")
 
     parser.add_argument("--asn-database", metavar="PATH",
                         default="/usr/share/GeoIP/GeoIPASNum.dat",
@@ -213,7 +216,7 @@ def send_measures(options, family, probes):
                                        sources=[source],
                                        measurements=measurements,
                                        is_oneoff=True,
-                                       is_public=False)
+                                       is_public=options.public)
     success, response = request.create()
     if success:
         m = response['measurements']
