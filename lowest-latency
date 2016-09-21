@@ -73,7 +73,7 @@ def parse():
                    default=1,
                    help="Maximum acceptable packet loss")
     g.add_argument("--best-margin", metavar="PERCENT",
-                   default=50,
+                   default=50, type=int,
                    help="Margin the best endpoint should have")
 
     g = parser.add_argument_group("Atlas API")
