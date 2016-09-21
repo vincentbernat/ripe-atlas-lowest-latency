@@ -9,6 +9,11 @@ of probes.
 The set of probes can be chosen using various criteria and the results
 can be grouped on various other criteria. The most interesting
 criteria are the ASN and the country.
+
+Credentials for RIPE Atlas API can be provided on the command-line or
+through ``ATLAS_CREATE_KEY`` and ``ATLAS_DOWNLOAD_KEY`` environment
+variables.
+
 """
 
 import os
