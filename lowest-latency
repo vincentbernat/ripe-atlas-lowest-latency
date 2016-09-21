@@ -310,10 +310,14 @@ def get_summary(options, probes, results):
         summary = dict(rcvd=rcvd,
                        sent=sent,
                        loss=loss)
-        rtts = [x['avg'] for x in aggregated_results[key] if x['rcvd'] > 0]
+        rtts = [statistics.median([y['rtt']
+                                   for y in x['result']
+                                   if 'rtt' in y])
+                for x in aggregated_results[key]
+                if x['rcvd'] > 0]
         if rtts:
             summary['mean'] = statistics.mean(rtts)
-            summary['median'] = statistics.median_high(rtts)
+            summary['median'] = statistics.median(rtts)
             summary['stdev'] = statistics.stdev(rtts)
             summary['min'] = min(rtts)
             summary['max'] = max(rtts)
@@ -324,24 +328,24 @@ def get_best_endpoint(options, key, summary_results):
     """Get the best endpoint for the given aggregation key."""
     max_loss = 100 * options.max_loss / 3 / options.aggregate_count + 1
     losses = False
-    means = {}
+    medians = {}
     for endpoint in options.endpoint:
         ekey = "{}-{}".format(endpoint, key)
         summary = summary_results[ekey]
         if summary["loss"] > max_loss:
             losses = True
             continue
-        if 'mean' not in summary:
+        if 'median' not in summary:
             continue
-        means[endpoint] = summary['mean']
-    for endpoint in means:
+        medians[endpoint] = summary['median']
+    for endpoint in medians:
         # This endpoint is the best if it is better than any other and
         # it is better than one other by the given margin. If there
         # are losses, we have to select a endpoint.
-        if means[endpoint] != min(means.values()):
+        if medians[endpoint] != min(medians.values()):
             continue
         if (losses or
-            means[endpoint] * (1 + options.best_margin / 100.) <= max(means.values())):
+            medians[endpoint] * (1 + options.best_margin / 100.) <= max(medians.values())):
             return endpoint
 
     return None
