@@ -205,7 +205,7 @@ def send_measures(options, family, probes):
 
     We use a simple ping.
     """
-    logger.info("Send measure requests")
+    logger.debug("Send measure requests")
     measurements = []
     for endpoint in options.endpoint:
         measurements.append(atlas.Ping(af=family,
@@ -232,8 +232,6 @@ def get_results(options, measures):
     """Fetch the given measures and return the results."""
     results = {}
     for msm in measures:
-        logger.info("Fetch latest results for measurement {}".format(msm))
-
         logger.debug("Fetch metadata for {}".format(msm))
         count = 0
         while True:
