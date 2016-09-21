@@ -370,7 +370,11 @@ def display_summary(options, summary_results):
     if options.aggregate == ['asn']:
         row.append('ASN')
     csvout.writerow(row)
+    seen = {}
     for key in [key.split("-", 1)[1] for key in summary_results]:
+        if key in seen:
+            continue
+        seen[key] = True
         if not all(["{}-{}".format(endpoint, key) in summary_results
                     for endpoint in options.endpoint]):
             continue
