@@ -22,6 +22,7 @@ import itertools
 import functools
 import collections
 import statistics
+import mmap
 import csv
 
 from ipaddress import ip_network, ip_address
@@ -86,6 +87,9 @@ def parse():
                    type=int, action="append",
                    help="Use the provided measurement IDs")
 
+    parser.add_argument("--asn-database", metavar="PATH",
+                        default="/usr/share/GeoIP/GeoIPASNum.dat",
+                        help="Path to GeoIP ASN database")
     parser.add_argument("endpoint", metavar="IP", nargs="+",
                         type=ip_address,
                         help="endpoints to test")
@@ -334,11 +338,38 @@ def get_best_endpoint(options, key, summary_results):
 
     return None
 
+@functools.lru_cache(maxsize=512)
+def get_asn_description(database, asn):
+    """Get the description for the given AS number.
+
+    This is done by parsing a MaxMind legacy GeoIP ASN edition
+    database and looking for chains starting with "AS" followed by
+    the researched ASN. The idea is to keep the "parser" minimal.
+    """
+    try:
+        with open(database, 'rb') as db:
+            with mmap.mmap(db.fileno(), 0, access=mmap.ACCESS_READ) as buf:
+                asb = b"\x00AS" + str(asn).encode() + b" "
+                idx = buf.find(asb)
+                if idx == -1:
+                    return ""
+                idx += len(asb)
+                end = buf.find(b"\x00", idx)
+                if end == -1:
+                    # Odd?
+                    return ""
+                return buf[idx:end].decode(errors='replace')
+    except FileNotFoundError:
+        return ""
+
 def display_summary(options, summary_results):
     """Display results in TSV format, group by endpoints."""
     csvout = csv.writer(sys.stdout, delimiter='\t')
-    csvout.writerow(['best', 'endpoint', 'key', 'loss', 'mean', 'median',
-                     'stdev', 'min', 'max'])
+    row = ['best', 'endpoint', 'key', 'loss', 'mean', 'median',
+           'stdev', 'min', 'max']
+    if options.aggregate == ['asn']:
+        row.append('ASN')
+    csvout.writerow(row)
     for key in [key.split("-", 1)[1] for key in summary_results]:
         if not all(["{}-{}".format(endpoint, key) in summary_results
                     for endpoint in options.endpoint]):
@@ -357,6 +388,8 @@ def display_summary(options, summary_results):
                    summary.get('stdev', ""),
                    summary.get('min', ""),
                    summary.get('max', "")]
+            if options.aggregate == ['asn']:
+                row.append(get_asn_description(options.asn_database, key))
             if isatty and endpoint == best_endpoint:
                 print("\033[32m", end='')
             csvout.writerow([isinstance(x, float) and "{:.2f}".format(x) or x
