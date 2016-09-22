@@ -57,11 +57,12 @@ def parse():
     g = parser.add_argument_group("Probe selection")
     g.add_argument("--limit", metavar="MAX", type=int, default=0,
                    help="Maximum number of probes to request")
-    g.add_argument("--country", metavar="COUNTRY",
+    g.add_argument("--country", metavar="COUNTRY", action="append",
                    help="Country code of probes")
-    g.add_argument("--asn", metavar="ASN",
+    g.add_argument("--asn", metavar="ASN", action="append",
                    help="ASN of probes", type=int)
     g.add_argument("--prefix", metavar="PREFIX", type=ip_network,
+                   action="append",
                    help="IP network prefix")
     g.add_argument("--no-cache", action="store_false", dest="cache",
                    help="Disable probe caching")
@@ -122,20 +123,20 @@ def get_family(options):
     return families[0]
 
 
-def get_probes(options, family):
+def get_probes_for(options, family, country=None, asn=None, prefix=None):
     """Get a list of probes matching the provided options."""
     cachename = "probes-v{}".format(family)
     filters = {"tags": "system-ipv{}-works".format(family),
                "status": 1}
-    if options.country:
-        filters["country_code"] = options.country
-        cachename += "-country-{}".format(options.country)
-    if options.asn:
-        filters["asn_v{}".format(family)] = options.asn
-        cachename += "-asn-{}".format(options.asn)
-    if options.prefix:
-        filters["prefix_v{}".format(family)] = options.prefix
-        cachename += "-prefix-{}".format(options.prefix)
+    if country:
+        filters["country_code"] = country
+        cachename += "-country-{}".format(country)
+    if asn:
+        filters["asn_v{}".format(family)] = asn
+        cachename += "-asn-{}".format(asn)
+    if prefix:
+        filters["prefix_v{}".format(family)] = prefix
+        cachename += "-prefix-{}".format(prefix)
     cachename = re.sub(r'[^a-zA-Z0-9-]', '-', cachename)
 
     probes = None
@@ -159,7 +160,8 @@ def get_probes(options, family):
         logger.info("Cache disabled")
 
     if not probes:
-        logger.info("Fetch list of probes (max: {})".format(options.limit))
+        logger.info("Fetch list of probes (v{}, C: {}, AS: {}, P: {})".format(
+            family, country or "any", asn or "any", prefix or "any"))
         probes = atlas.ProbeRequest(**filters)
 
     if options.cache and not cached:
@@ -172,6 +174,24 @@ def get_probes(options, family):
         probes = itertools.islice(probes, options.limit)
 
     return probes
+
+
+def get_probes(options, family):
+    """Return a list of probes matching the provided options."""
+    probes = []
+    for country in (options.country or []):
+        probes.extend(list(get_probes_for(options, family, country=country)))
+    for asn in (options.asn or []):
+        probes.extend(list(get_probes_for(options, family, asn=asn)))
+    for prefix in (options.prefix or []):
+        probes.extend(list(get_probes_for(options, family, prefix=prefix)))
+    if not options.country and not options.asn and not options.prefix:
+        probes = get_probes_for(options, family)
+    if options.limit:
+        probes = itertools.islice(probes, options.limit)
+    probes = {probe['id']: probe for probe in probes}
+
+    return probes.values()
 
 
 def aggregate_key(options, family, probe):
