@@ -53,3 +53,17 @@ Here is an example of output for `--country=CH --aggregate=asn 192.0.2.45 203.0.
     *       203.0.113.4     15600   0.00    12.28   14.47   6.40    4.33    19.54
             192.0.2.45      6830    0.00    77.46   72.43   20.90   59.52   100.41
     *       203.0.113.4     6830    0.00    38.00   40.00   2.83    35.99   40.00
+
+It does the following:
+
+ - fetch a list of all probes with country code "CH"
+ - keep exactly 4 probes in each AS (discard AS with fewer probes)
+ - each selected probe will ping the list of provided endpoints
+ - retrieve the results
+ - compute some statistics and decide that the best endpoint is the
+   one whose latency is at least 50% better (or the one without loss
+   if there are lossy endpoints)
+
+There are many options available. Check `--help`.
+
+It needs Atlas [API keys](http://atlas.ripe.net/keys/).
