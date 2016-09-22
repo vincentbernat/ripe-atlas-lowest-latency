@@ -238,6 +238,8 @@ def send_measures(options, family, probes):
             af=family,
             target=str(endpoint),
             packets=options.ping_count,
+            is_oneoff=True,
+            is_public=options.public,
             description="lowest-latency ping test for {}".format(endpoint)))
     probes = list(probes)
     source = atlas.AtlasSource(type="probes",
@@ -245,9 +247,7 @@ def send_measures(options, family, probes):
                                value=",".join([str(x['id']) for x in probes]))
     request = atlas.AtlasCreateRequest(key=options.api_create_key,
                                        sources=[source],
-                                       measurements=measurements,
-                                       is_oneoff=True,
-                                       is_public=options.public)
+                                       measurements=measurements)
     success, response = request.create()
     if success:
         m = response['measurements']
