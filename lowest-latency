@@ -150,8 +150,12 @@ def get_probes_for(options, family, country=None, asn=None, prefix=None):
                     logger.debug(
                         "Retrieve cached list of probes from {}".format(
                             cachename))
-                    probes = json.load(cache)
-                    cached = True
+                    try:
+                        probes = json.load(cache)
+                        cached = True
+                    except ValueError as e:
+                        logger.warn("Unable to read cache file {}: {}".format(
+                            cachename, e))
                 else:
                     logger.debug("Cache too old")
         except FileNotFoundError:
