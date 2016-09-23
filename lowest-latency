@@ -358,7 +358,7 @@ def get_summary(options, probes, results):
         if rtts:
             summary['mean'] = statistics.mean(rtts)
             summary['median'] = statistics.median(rtts)
-            summary['stdev'] = statistics.stdev(rtts)
+            summary['stdev'] = len(rtts) > 1 and statistics.stdev(rtts) or 0
             summary['min'] = min(rtts)
             summary['max'] = max(rtts)
         summary_results[key] = summary
