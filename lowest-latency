@@ -238,6 +238,9 @@ def send_measures(options, family, probes):
     """
     logger.debug("Send measure requests")
     measurements = []
+    auth = {}
+    if options.api_create_key:
+        auth['key'] = options.api_create_key
     for endpoint in options.endpoint:
         measurements.append(atlas.Ping(
             af=family,
@@ -250,9 +253,8 @@ def send_measures(options, family, probes):
     source = atlas.AtlasSource(type="probes",
                                requested=len(probes),
                                value=",".join([str(x['id']) for x in probes]))
-    request = atlas.AtlasCreateRequest(key=options.api_create_key,
-                                       sources=[source],
-                                       measurements=measurements)
+    request = atlas.AtlasCreateRequest(sources=[source],
+                                       measurements=measurements, **auth)
     success, response = request.create()
     if success:
         m = response['measurements']
@@ -266,11 +268,14 @@ def send_measures(options, family, probes):
 def get_results(options, measures):
     """Fetch the given measures and return the results."""
     results = {}
+    auth = {}
+    if options.api_download_key:
+        auth['key'] = options.api_download_key
     for msm in measures:
         logger.debug("Fetch metadata for {}".format(msm))
         count = 0
         while True:
-            measurement = atlas.Measurement(id=msm)
+            measurement = atlas.Measurement(id=msm, **auth)
             logger.debug("Current state for {}: {}".format(
                 msm, measurement.status))
             if measurement.status == "Stopped":
@@ -284,7 +289,8 @@ def get_results(options, measures):
             time.sleep(5)
 
         logger.debug("Fetch actual results for {}".format(msm))
-        success, response = atlas.AtlasLatestRequest(msm_id=msm).create()
+        success, response = atlas.AtlasLatestRequest(msm_id=msm,
+                                                     **auth).create()
         if success:
             logger.debug("Measure successfully fetched for {}".format(msm))
             results[msm] = response
