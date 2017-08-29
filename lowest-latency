@@ -30,6 +30,9 @@ import collections
 import statistics
 import mmap
 import csv
+import requests
+import math
+import random
 
 from ipaddress import ip_network, ip_address
 
@@ -57,19 +60,24 @@ def parse():
     g = parser.add_argument_group("Probe selection")
     g.add_argument("--limit", metavar="MAX", type=int, default=0,
                    help="Maximum number of probes to request")
-    g.add_argument("--country", metavar="COUNTRY", action="append",
+    g.add_argument("--country", metavar="NAME", action="append",
                    help="Country code of probes")
     g.add_argument("--asn", metavar="ASN", action="append",
                    help="ASN of probes", type=int)
     g.add_argument("--prefix", metavar="PREFIX", type=ip_network,
                    action="append",
                    help="IP network prefix")
+    g.add_argument("--city", metavar="NAME", action="append",
+                   help="Limit probes to the given city")
+    g.add_argument("--distance", metavar="KM", type=int,
+                   default=50,
+                   help="Maximum distance to specified cities")
     g.add_argument("--no-cache", action="store_false", dest="cache",
                    help="Disable probe caching")
 
     g = parser.add_argument_group("Aggregation")
     g.add_argument("--aggregate", metavar="FIELD",
-                   choices=("asn", "country"),
+                   choices=("asn", "country", "city"),
                    action="append",
                    help="Aggregation criteria to use")
     g.add_argument("--aggregate-count", metavar="N",
@@ -123,7 +131,9 @@ def get_family(options):
     return families[0]
 
 
-def get_probes_for(options, family, country=None, asn=None, prefix=None):
+def get_probes_for(options, family,
+                   country=None,
+                   asn=None, prefix=None):
     """Get a list of probes matching the provided options."""
     cachename = "probes-v{}".format(family)
     filters = {"tags": "system-ipv{}-works".format(family),
@@ -175,13 +185,56 @@ def get_probes_for(options, family, country=None, asn=None, prefix=None):
             probes = list(probes)
             json.dump(probes, cache)
 
-    if options.limit:
-        probes = itertools.islice(probes, options.limit)
-
     return probes
 
 
+def gcdistance(lat1, lon1, lat2, lon2):
+    """Compute great circle distance between two points."""
+    lon1, lat1, lon2, lat2 = (math.radians(x)
+                              for x in [lon1, lat1, lon2, lat2])
+    dlon = lon2 - lon1
+    dlat = lat2 - lat1
+    a = math.sin(dlat/2)**2 + \
+        math.cos(lat1) * math.cos(lat2) * math.sin(dlon/2)**2
+    c = 2 * math.asin(math.sqrt(a))
+    km = 6367 * c
+    return km
+
+
+def filter_cities(options, probes):
+    """Return a subset of the given probes matching the given cities.
+
+    """
+    if not options.city:
+        return probes
+    filtered = []
+    for city in options.city:
+        logger.debug("Getting coordinates for {}".format(city))
+        r = requests.get("https://maps.googleapis.com/maps/api/geocode/json",
+                         params=dict(sensor="false",
+                                     address=city))
+        r.raise_for_status()
+        info = r.json()
+        info = [i for i in info['results']
+                if 'locality' in i['types']]
+        info = info[0]['geometry']['location']
+        logger.debug("City {} is latitude {} longitude {}".format(
+            city, info["lat"], info["lng"]))
+        found = [p for p in probes
+                 if 'geometry' in p and p['geometry']['type'] == 'Point' and
+                 gcdistance(p['geometry']['coordinates'][1],
+                            p['geometry']['coordinates'][0],
+                            info['lat'], info['lng']) < options.distance]
+        for p in found:
+            p['city'] = city
+        logger.debug("Found {} probes near {}".format(len(found),
+                                                      city))
+        filtered.extend(found)
+    return filtered
+
+
 def get_probes(options, family):
+
     """Return a list of probes matching the provided options."""
     probes = []
     for country in (options.country or []):
@@ -192,7 +245,9 @@ def get_probes(options, family):
         probes.extend(list(get_probes_for(options, family, prefix=prefix)))
     if not options.country and not options.asn and not options.prefix:
         probes = get_probes_for(options, family)
+    probes = filter_cities(options, probes)
     if options.limit:
+        random.shuffle(probes)
         probes = itertools.islice(probes, options.limit)
     probes = {probe['id']: probe for probe in probes}
 
@@ -207,6 +262,8 @@ def aggregate_key(options, family, probe):
             key.append(str(probe["asn_v{}".format(family)]))
         if agg == "country":
             key.append(probe["country_code"])
+        if agg == "city":
+            key.append(probe["city"])
     key = "-".join(key) or "all"
     return key
 
