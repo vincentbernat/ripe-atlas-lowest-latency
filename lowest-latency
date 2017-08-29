@@ -72,6 +72,12 @@ def parse():
     g.add_argument("--distance", metavar="KM", type=int,
                    default=50,
                    help="Maximum distance to specified cities")
+    g.add_argument("--include-tag", metavar="TAG", type=str,
+                   action="append",
+                   help="Include only probes with this tag")
+    g.add_argument("--exclude-tag", metavar="TAG", type=str,
+                   action="append",
+                   help="Exclude probes with this tag")
     g.add_argument("--no-cache", action="store_false", dest="cache",
                    help="Disable probe caching")
 
@@ -233,6 +239,23 @@ def filter_cities(options, probes):
     return filtered
 
 
+def filter_tags(options, probes):
+    """Return a subset of the given probes matching the tag
+    specification. This is done at this level to not mess with the
+    caching mechanism.
+
+    """
+    include = set(options.include_tag or [])
+    exclude = set(options.exclude_tag or [])
+    filtered = [p for p in probes
+                if include <= set(t['slug'] for t in p['tags'])
+                and len(set(t['slug'] for t in p['tags']) & exclude) == 0]
+    if len(filtered) != len(probes):
+        logger.debug("Tag filter reduced the number of "
+                     "probes from {} to {}".format(len(probes),
+                                                   len(filtered)))
+    return filtered
+
 def get_probes(options, family):
 
     """Return a list of probes matching the provided options."""
@@ -245,6 +268,7 @@ def get_probes(options, family):
         probes.extend(list(get_probes_for(options, family, prefix=prefix)))
     if not options.country and not options.asn and not options.prefix:
         probes = get_probes_for(options, family)
+    probes = filter_tags(options, probes)
     probes = filter_cities(options, probes)
     if options.limit:
         random.shuffle(probes)
