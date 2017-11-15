@@ -66,4 +66,7 @@ It does the following:
 
 There are many options available. Check `--help`.
 
-It needs Atlas [API keys](http://atlas.ripe.net/keys/).
+It needs Atlas [API keys](http://atlas.ripe.net/keys/). You can
+provide them using `--api-create-key` and `--api-download-key` or
+using environment variables `ATLAS_DOWNLOAD_KEY` and
+`ATLAS_CREATE_KEY`.
