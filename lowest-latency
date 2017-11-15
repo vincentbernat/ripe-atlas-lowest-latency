@@ -216,11 +216,17 @@ def filter_cities(options, probes):
     filtered = []
     for city in options.city:
         logger.debug("Getting coordinates for {}".format(city))
-        r = requests.get("https://maps.googleapis.com/maps/api/geocode/json",
-                         params=dict(sensor="false",
-                                     address=city))
-        r.raise_for_status()
-        info = r.json()
+        while True:
+            r = requests.get("https://maps.googleapis.com/maps/api/geocode/json",
+                             params=dict(sensor="false",
+                                         address=city))
+            r.raise_for_status()
+            info = r.json()
+            if info.get('status') == 'OVER_QUERY_LIMIT':
+                logger.debug("Quota limit reached, sleep a bit and retry")
+                time.sleep(10)
+            else:
+                break
         info = [i for i in info['results']
                 if 'locality' in i['types']]
         info = info[0]['geometry']['location']
